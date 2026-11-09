@@ -1,0 +1,141 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { type Abi, encodeAbiParameters, encodeEventTopics, getAddress, toHex } from "viem";
+import { describe, expect, it } from "vitest";
+import {
+  AGENT_HUB_ADDRESS,
+  agentHubAbi,
+  batches,
+  DisabledHub,
+  decodeTradeRecorded,
+  ELYSIUM_MAINNET_CHAIN_ID,
+  marketBytes32,
+  marketFromBytes32,
+  toEpochReceipt,
+  toTradeReceipt,
+} from "../src/index.js";
+
+const require = createRequire(import.meta.url);
+
+function compileInterface(): Abi {
+  // solc-js: compile contracts/IAgentHub.sol and take the ABI of the interface
+  const solc = require("solc");
+  const source = readFileSync(new URL("../contracts/IAgentHub.sol", import.meta.url), "utf8");
+  const input = { language: "Solidity", sources: { "IAgentHub.sol": { content: source } }, settings: { outputSelection: { "*": { "*": ["abi"] } } } };
+  const out = JSON.parse(solc.compile(JSON.stringify(input)));
+  const errors = (out.errors ?? []).filter((e: { severity: string }) => e.severity === "error");
+  if (errors.length) throw new Error(errors.map((e: { formattedMessage: string }) => e.formattedMessage).join("\n"));
+  return out.contracts["IAgentHub.sol"].IAgentHub.abi as Abi;
+}
+
+type Param = { type: string; name?: string; indexed?: boolean; components?: readonly Param[] };
+const param = (p: Param): string => {
+  const t = p.components ? `(${p.components.map(param).join(",")})${p.type.slice("tuple".length)}` : p.type;
+  return `${t}${p.indexed ? " indexed" : ""}${p.name ? ` ${p.name}` : ""}`;
+};
+/** Canonical description of every function/event/error: name, typed named params, outputs, mutability. */
+const signatures = (abi: Abi) =>
+  abi
+    .filter((x) => x.type === "function" || x.type === "event" || x.type === "error")
+    .map((x) => {
+      const i = x as { type: string; name: string; inputs: Param[]; outputs?: Param[]; stateMutability?: string };
+      const out = i.outputs ? ` returns (${i.outputs.map(param).join(",")})` : "";
+      return `${i.type} ${i.name}(${i.inputs.map(param).join(",")})${i.stateMutability ? ` ${i.stateMutability}` : ""}${out}`;
+    })
+    .sort();
+
+describe("AgentHub interface", () => {
+  it("IAgentHub.sol compiles and matches the TypeScript ABI exactly (functions, events, errors)", () => {
+    const sol = compileInterface();
+    expect(signatures(agentHubAbi as Abi)).toEqual(signatures(sol));
+  });
+
+  it("exposes no administrative surface", () => {
+    const names = (agentHubAbi as Abi).filter((x) => "name" in x).map((x) => (x as { name: string }).name);
+    for (const forbidden of [
+      "setConfig",
+      "setConfigs",
+      "setUtilityToken",
+      "setOperator",
+      "pause",
+      "unpause",
+      "upgradeToAndCall",
+      "distributeRewards",
+      "setPreset",
+      "transferOwnership",
+    ]) {
+      expect(names).not.toContain(forbidden);
+    }
+  });
+
+  it("points at the public mainnet deployment", () => {
+    expect(getAddress(AGENT_HUB_ADDRESS)).toBe(AGENT_HUB_ADDRESS);
+    expect(ELYSIUM_MAINNET_CHAIN_ID).toBe(99901);
+  });
+});
+
+describe("receipts", () => {
+  it("market bytes32 = utf8 right-padded with zeros, and back", () => {
+    expect(marketBytes32("HYPE")).toBe(toHex("HYPE", { size: 32 }));
+    expect(marketBytes32("HYPE").startsWith("0x48595045")).toBe(true);
+    expect(marketFromBytes32(marketBytes32("UBTC"))).toBe("UBTC");
+  });
+
+  it("trade receipt: 6-decimal USD, price * 1e8, side 0/1", () => {
+    const r = toTradeReceipt({ agentId: 7, side: "sell", market: "HYPE", sizeUsd: 123.4567891, price: 41.23456789, hlOrderId: 99, timestamp: 1_700_000_000 });
+    expect(r).toEqual({
+      agentId: 7n,
+      side: 1,
+      market: marketBytes32("HYPE"),
+      sizeUsd: 123456789n,
+      priceE8: 4123456789n,
+      hlOrderId: 99n,
+      timestamp: 1_700_000_000n,
+    });
+    expect(toTradeReceipt({ agentId: 1, side: "buy", market: "X", sizeUsd: 1, price: 1, hlOrderId: 1, timestamp: 1 }).side).toBe(0);
+  });
+
+  it("epoch receipt: pnl in bps since activation, clamped to int32", () => {
+    expect(toEpochReceipt({ agentId: 1, equityUsd: 110, initialEquityUsd: 100, timestamp: 5 })).toEqual({
+      agentId: 1n,
+      equityUsd: 110_000_000n,
+      pnlBps: 1000,
+      timestamp: 5n,
+    });
+    expect(toEpochReceipt({ agentId: 1, equityUsd: 1e12, initialEquityUsd: 1e-6, timestamp: 5 }).pnlBps).toBe(2_147_483_647);
+    expect(toEpochReceipt({ agentId: 1, equityUsd: 5, initialEquityUsd: 0, timestamp: 5 }).pnlBps).toBe(0);
+  });
+
+  it("batches never produce an empty batch", () => {
+    expect(batches([], 100)).toEqual([]);
+    expect(batches([1, 2, 3], 2)).toEqual([[1, 2], [3]]);
+  });
+
+  it("decodes a TradeRecorded log into human units", () => {
+    const r = toTradeReceipt({ agentId: 3, side: "buy", market: "UBTC", sizeUsd: 250.5, price: 101234.5, hlOrderId: 42, timestamp: 1_700_000_123 });
+    const event = (agentHubAbi as Abi).find((x) => x.type === "event" && x.name === "TradeRecorded")!;
+    const topics = encodeEventTopics({ abi: agentHubAbi, eventName: "TradeRecorded", args: { agentId: r.agentId } });
+    const nonIndexed = (event as unknown as { inputs: { indexed?: boolean; type: string; name: string }[] }).inputs.filter((i) => !i.indexed);
+    const data = encodeAbiParameters(nonIndexed, [r.side, r.market, r.sizeUsd, r.priceE8, r.hlOrderId, r.timestamp]);
+    expect(decodeTradeRecorded({ data, topics: topics as [`0x${string}`, ...`0x${string}`[]] })).toEqual({
+      agentId: 3,
+      side: "buy",
+      market: "UBTC",
+      sizeUsd: 250.5,
+      price: 101234.5,
+      hlOrderId: 42,
+      timestamp: 1_700_000_123,
+    });
+    expect(decodeTradeRecorded({ data: "0x", topics: [] })).toBeNull();
+  });
+});
+
+describe("DisabledHub", () => {
+  it("fails loudly on reads and writes, isPremium is false", async () => {
+    const h = new DisabledHub();
+    expect(h.enabled).toBe(false);
+    await expect(h.getAgent()).rejects.toThrow(/not configured/);
+    await expect(h.recordTrades()).rejects.toThrow();
+    expect(await h.isPremium()).toBe(false);
+  });
+});

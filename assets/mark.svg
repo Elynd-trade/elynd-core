@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 474 265" width="474" height="265" role="img" aria-label="Elynd">
+  <defs>
+    <linearGradient id="elynd-steel" x1="0" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#b9c2cb"/>
+      <stop offset="0.55" stop-color="#7f8a95"/>
+      <stop offset="1" stop-color="#56616c"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#elynd-steel)" fill-rule="evenodd" d="M105 5H287L262 55H371.5A102.5 102.5 0 0 1 371.5 260H207L232 215H105A105 105 0 0 1 105 5ZM162 100H312A35 35 0 0 1 312 170H162A35 35 0 0 1 162 100Z"/>
+</svg>

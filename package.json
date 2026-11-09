@@ -1,0 +1,46 @@
+{
+  "name": "elynd-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Elynd: agentic spot trading on Hyperliquid. Strategy specs, risk engine, decision loop, Hyperliquid and Elysium layers, ERC-8004 identity and the MCP server.",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://elynd.trade",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Elynd-trade/elynd-core.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Elynd-trade/elynd-core/issues",
+    "email": "support@elynd.trade"
+  },
+  "type": "module",
+  "workspaces": [
+    "packages/strategy",
+    "packages/indicators",
+    "packages/hyperliquid",
+    "packages/risk",
+    "packages/agenthub",
+    "packages/runner",
+    "packages/erc8004",
+    "apps/mcp"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -b && npm run build -w @elynd/mcp",
+    "clean": "tsc -b --clean && npm run clean -w @elynd/mcp",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "examples": "node examples/validate-spec.mjs && node examples/risk-engine.mjs && node examples/simulated-tick.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
